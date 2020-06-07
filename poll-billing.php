@@ -2,54 +2,49 @@
 <?php
 
 /*
- * Observium
+ * LibreNMS
  *
- *   This file is part of Observium.
+ *   This file is part of LibreNMS.
  *
- * @package    observium
+ * @package    LibreNMS
  * @subpackage billing
- * @author     Adam Armstrong <adama@memetic.org>
  * @copyright  (C) 2006 - 2012 Adam Armstrong
  */
 
-chdir(dirname($argv[0]));
+use LibreNMS\Data\Store\Datastore;
 
-// FIXME - implement cli switches, debugging, etc.
-require 'includes/defaults.inc.php';
-require 'config.php';
-require 'includes/definitions.inc.php';
-require 'includes/functions.php';
+$init_modules = array();
+require __DIR__ . '/includes/init.php';
 
-$iter = '0';
+if (isset($argv[1]) && is_numeric($argv[1])) {
+    // allow old cli style
+    $options = ['b' => $argv[1]];
+} else {
+    $options = getopt('db:');
+}
 
-rrdtool_pipe_open($rrd_process, $rrd_pipes);
+set_debug(isset($options['d']));
+Datastore::init();
+
+// Wait for schema update, as running during update can break update
+if (get_db_schema() < 107) {
+    logfile("BILLING: Cannot continue until the database schema update to >= 107 is complete");
+    exit(1);
+}
 
 $poller_start = microtime(true);
 echo "Starting Polling Session ... \n\n";
 
-// Wait for schema update, as running during update can break update
-$dbVersion = dbFetchCell('SELECT version FROM dbSchema');
-if ($dbVersion < 107) {
-    logfile("BILLING: Cannot continue until dbSchema update to >= 107 is complete");
-    exit(1);
+$query = \LibreNMS\DB\Eloquent::DB()->table('bills');
+
+if (isset($options['b'])) {
+    $query->where('bill_id', $options['b']);
 }
 
-foreach (dbFetchRows('SELECT * FROM `bills`') as $bill_data) {
-    echo 'Bill : '.$bill_data['bill_name']."\n";
+foreach ($query->get(['bill_id', 'bill_name']) as $bill) {
+    echo 'Bill : '.$bill->bill_name."\n";
+    $bill_id = $bill->bill_id;
 
-    // replace old bill_gb with bill_quota (we're now storing bytes, not gigabytes)
-    if ($bill_data['bill_type'] == 'quota' && !is_numeric($bill_data['bill_quota'])) {
-        $bill_data['bill_quota'] = ($bill_data['bill_gb'] * $config['billing']['base'] * $config['billing']['base']);
-        dbUpdate(array('bill_quota' => $bill_data['bill_quota']), 'bills', '`bill_id` = ?', array($bill_data['bill_id']));
-        echo 'Quota -> '.$bill_data['bill_quota'];
-    }
-
-    CollectData($bill_data['bill_id']);
-    $iter++;
-}
-
-
-function CollectData($bill_id) {
     $port_list = dbFetchRows('SELECT * FROM `bill_ports` as P, `ports` as I, `devices` as D WHERE P.bill_id=? AND I.port_id = P.port_id AND D.device_id = I.device_id', array($bill_id));
 
     $now = dbFetchCell('SELECT NOW()');
@@ -66,38 +61,58 @@ function CollectData($bill_id) {
         $port_data['in_measurement']  = getValue($port_data['hostname'], $port_data['port'], $port_data['ifIndex'], 'In');
         $port_data['out_measurement'] = getValue($port_data['hostname'], $port_data['port'], $port_data['ifIndex'], 'Out');
 
-        $last_counters = getLastPortCounter($port_id);
+        $last_counters = getLastPortCounter($port_id, $bill_id);
         if ($last_counters['state'] == 'ok') {
-            $port_data['last_in_measurement']  = $last_counters[in_counter];
-            $port_data['last_in_delta']        = $last_counters[in_delta];
-            $port_data['last_out_measurement'] = $last_counters[out_counter];
-            $port_data['last_out_delta']       = $last_counters[out_delta];
+            $port_data['last_in_measurement']  = $last_counters['in_counter'];
+            $port_data['last_in_delta']        = $last_counters['in_delta'];
+            $port_data['last_out_measurement'] = $last_counters['out_counter'];
+            $port_data['last_out_delta']       = $last_counters['out_delta'];
 
-            if ($port_data['in_measurement'] >= $port_data['last_in_measurement']) {
+            $tmp_period = dbFetchCell("SELECT UNIX_TIMESTAMP(CURRENT_TIMESTAMP()) - UNIX_TIMESTAMP('".mres($last_counters['timestamp'])."')");
+
+            if ($port_data['ifSpeed'] > 0 && (delta_to_bits($port_data['in_measurement'], $tmp_period)-delta_to_bits($port_data['last_in_measurement'], $tmp_period)) > $port_data['ifSpeed']) {
+                $port_data['in_delta'] = $port_data['last_in_delta'];
+            } elseif ($port_data['in_measurement'] >= $port_data['last_in_measurement']) {
                 $port_data['in_delta'] = ($port_data['in_measurement'] - $port_data['last_in_measurement']);
-            }
-            else {
+            } else {
                 $port_data['in_delta'] = $port_data['last_in_delta'];
             }
-            
-            if ($port_data['out_measurement'] >= $port_data['last_out_measurement']) {
+
+            if ($port_data['ifSpeed'] > 0 && (delta_to_bits($port_data['out_measurement'], $tmp_period)-delta_to_bits($port_data['last_out_measurement'], $tmp_period)) > $port_data['ifSpeed']) {
+                $port_data['out_delta'] = $port_data['last_out_delta'];
+            } elseif ($port_data['out_measurement'] >= $port_data['last_out_measurement']) {
                 $port_data['out_delta'] = ($port_data['out_measurement'] - $port_data['last_out_measurement']);
-            }
-            else {
+            } else {
                 $port_data['out_delta'] = $port_data['last_out_delta'];
             }
-        }
-        else {
+        } else {
             $port_data['in_delta'] = '0';
             $port_data['out_delta'] = '0';
         }
-        
-        $fields = array('timestamp' => $now, 'in_counter' => $port_data['in_measurement'], 'out_counter' => $port_data['out_measurement'], 'in_delta' => $port_data['in_delta'], 'out_delta' => $port_data['out_delta']);
-        if (dbUpdate($fields, 'bill_port_counters', "`port_id`='" . mres($port_id) . "'") == 0) {
-            $fields['port_id'] = $port_id;
-            dbInsert($fields, 'bill_port_counters');
-        }
+        //////////////////////////////////CountersValidation$DB-Update
+        echo "\nDB SNMP counters received.\n";
+        echo " in_measurement: ",$port_data['in_measurement']," out_measurement: ",$port_data['out_measurement'],"\n";
+        echo " The data types are --> in_measurement:".gettype($port_data['in_measurement'])." and out_measurement: ".gettype($port_data['out_measurement'])."\n";
+        //For debugging
+        logfile("\n****$now: ".$bill->bill_name."\nDB SNMP counters received.");
+        logfile("in_measurement: ".$port_data['in_measurement']."  out_measurement: ".$port_data['out_measurement']."\nThe data types are. in_measurement:".gettype($port_data['in_measurement'])." and out_measurement: ".gettype($port_data['out_measurement']));
+        logfile("IN_delta: ".$port_data['in_delta']." OUT_delta: ".$port_data['out_delta']."\nLast_IN_delta: ".$port_data['last_in_delta']." last_OUT_delta: ".$port_data['last_out_delta']);
 
+        if (is_numeric($port_data['in_measurement']) && is_numeric($port_data['out_measurement'])) {
+            echo "Nice, valid counters 'in/out_measurement', lets use them\n";
+            logfile("Nice, valid counters 'in/out_measurement', lets use them");
+            // NOTE: casting to string for mysqli bug (fixed by mysqlnd)
+            $fields = array('timestamp' => $now, 'in_counter' => (string)set_numeric($port_data['in_measurement']), 'out_counter' => (string)set_numeric($port_data['out_measurement']), 'in_delta' => (string)set_numeric($port_data['in_delta']), 'out_delta' => (string)set_numeric($port_data['out_delta']));
+            if (dbUpdate($fields, 'bill_port_counters', "`port_id`='" . mres($port_id) . "' AND `bill_id`='$bill_id'") == 0) {
+                $fields['bill_id'] = $bill_id;
+                $fields['port_id'] = $port_id;
+                dbInsert($fields, 'bill_port_counters');
+            }
+        } else {
+            echo "WATCH out! - Wrong counters. Table 'bill_port_counters' not updated\n";
+            logfile("WATCH out! - Wrong counters. Table 'bill_port_counters' not updated");
+        }
+        ////////////////////////////////EndCountersValidation&DB-Update
         $delta     = ($delta + $port_data['in_delta'] + $port_data['out_delta']);
         $in_delta  = ($in_delta + $port_data['in_delta']);
         $out_delta = ($out_delta + $port_data['out_delta']);
@@ -105,14 +120,13 @@ function CollectData($bill_id) {
 
     $last_data = getLastMeasurement($bill_id);
 
-    if ($last_data[state] == 'ok') {
-        $prev_delta     = $last_data[delta];
-        $prev_in_delta  = $last_data[in_delta];
-        $prev_out_delta = $last_data[out_delta];
-        $prev_timestamp = $last_data[timestamp];
+    if ($last_data['state'] == 'ok') {
+        $prev_delta     = $last_data['delta'];
+        $prev_in_delta  = $last_data['in_delta'];
+        $prev_out_delta = $last_data['out_delta'];
+        $prev_timestamp = $last_data['timestamp'];
         $period         = dbFetchCell("SELECT UNIX_TIMESTAMP(CURRENT_TIMESTAMP()) - UNIX_TIMESTAMP('".mres($prev_timestamp)."')");
-    }
-    else {
+    } else {
         $prev_delta     = '0';
         $period         = '0';
         $prev_in_delta  = '0';
@@ -127,26 +141,28 @@ function CollectData($bill_id) {
 
     if (!empty($period) && $period < '0') {
         logfile("BILLING: negative period! id:$bill_id period:$period delta:$delta in_delta:$in_delta out_delta:$out_delta");
+    } else {
+        // NOTE: casting to string for mysqli bug (fixed by mysqlnd)
+        dbInsert(array('bill_id' => $bill_id, 'timestamp' => $now, 'period' => $period, 'delta' => (string)$delta, 'in_delta' => (string)$in_delta, 'out_delta' => (string)$out_delta), 'bill_data');
     }
-    else {
-        dbInsert(array('bill_id' => $bill_id, 'timestamp' => $now, 'period' => $period, 'delta' => $delta, 'in_delta' => $in_delta, 'out_delta' => $out_delta), 'bill_data');
-    }
-
 }//end CollectData()
 
-
-if ($argv[1]) {
-    CollectData($argv[1]);
-}
 
 $poller_end  = microtime(true);
 $poller_run  = ($poller_end - $poller_start);
 $poller_time = substr($poller_run, 0, 5);
 
-dbInsert(array('type' => 'pollbill', 'doing' => $doing, 'start' => $poller_start, 'duration' => $poller_time, 'devices' => 0, 'poller' => $config['distributed_poller_name'] ), 'perf_times');
+dbInsert([
+    'type' => 'pollbill',
+    'doing' => $doing,
+    'start' => $poller_start,
+    'duration' => $poller_time,
+    'devices' => 0,
+    'poller' => \LibreNMS\Config::get('distributed_poller_name')
+], 'perf_times');
 if ($poller_time > 300) {
     logfile("BILLING: polling took longer than 5 minutes ($poller_time seconds)!");
 }
 echo "\nCompleted in $poller_time sec\n";
 
-rrdtool_pipe_close($rrd_process, $rrd_pipes);
+Datastore::terminate();

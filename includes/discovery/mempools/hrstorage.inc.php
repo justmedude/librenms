@@ -11,28 +11,23 @@ if (is_array($storage_array)) {
         $used   = ($storage['hrStorageUsed'] * $storage['hrStorageAllocationUnits']);
         $units  = $storage['hrStorageAllocationUnits'];
         $deny   = 1;
+        $perc_warn = 90;
 
         switch ($fstype) {
             case 'hrStorageVirtualMemory':
-            case 'hrStorageRam';
-            case 'nwhrStorageDOSMemory';
-            case 'nwhrStorageMemoryAlloc';
-            case 'nwhrStorageMemoryPermanent';
-            case 'nwhrStorageMemoryAlloc';
-            case 'nwhrStorageCacheBuffers';
-            case 'nwhrStorageCacheMovable';
-            case 'nwhrStorageCacheNonMovable';
-            case 'nwhrStorageCodeAndDataMemory';
-            case 'nwhrStorageDOSMemory';
-            case 'nwhrStorageIOEngineMemory';
-            case 'nwhrStorageMSEngineMemory';
-            case 'nwhrStorageUnclaimedMemory';
+            case 'hrStorageRam':
+            case 'nwhrStorageDOSMemory':
+            case 'nwhrStorageMemoryAlloc':
+            case 'nwhrStorageMemoryPermanent':
+            case 'nwhrStorageCacheBuffers':
+            case 'nwhrStorageCacheMovable':
+            case 'nwhrStorageCacheNonMovable':
+            case 'nwhrStorageCodeAndDataMemory':
+            case 'nwhrStorageIOEngineMemory':
+            case 'nwhrStorageMSEngineMemory':
+            case 'nwhrStorageUnclaimedMemory':
                 $deny = 0;
-            break;
-        }
-
-        if ($device['os'] == 'vmware' && $descr == 'Real Memory') {
-            $deny = 0;
+                break;
         }
 
         if ($device['os'] == 'routeros' && $descr == 'main memory') {
@@ -46,11 +41,22 @@ if (is_array($storage_array)) {
             $deny = 1;
         } //end if
 
-        if (!$deny && is_numeric($index)) {
-            discover_mempool($valid_mempool, $device, $index, 'hrstorage', $descr, $units, null, null);
+        if ($device['os'] == 'linux' || $device['os'] == 'vmware') {
+            if ($descr == 'Physical memory' || $descr == 'Real Memory') {
+                $perc_warn = 99;
+                $deny = 0;
+            } elseif ($descr == 'Virtual memory') {
+                $perc_warn = 95;
+            } elseif ($descr == 'Swap space') {
+                $perc_warn = 10;
+            }
         }
 
-        unset($deny, $fstype, $descr, $size, $used, $units, $storage_rrd, $old_storage_rrd);
+        if (!$deny && is_numeric($index)) {
+            discover_mempool($valid_mempool, $device, $index, 'hrstorage', $descr, $units, null, null, $perc_warn);
+        }
+
+        unset($deny, $fstype, $descr, $size, $used, $units, $storage_rrd, $old_storage_rrd, $perc_warn);
     }//end foreach
 
     unset($storage_array);

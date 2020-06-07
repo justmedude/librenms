@@ -1,385 +1,128 @@
 <?php
-
-/*
- * Observium
+/**
+ * rrdtool.inc.php
  *
- *   This file is part of Observium.
+ * Helper for processing rrdtool requests efficiently
  *
- * @package    observium
- * @subpackage rrdtool
- * @author     Adam Armstrong <adama@memetic.org>
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * @package    LibreNMS
+ * @link       http://librenms.org
  * @copyright  (C) 2006 - 2012 Adam Armstrong
+ * @copyright  2016 Tony Murray
+ * @author     Tony Murray <murraytony@gmail.com>
  */
 
-/**
- * Opens up a pipe to RRDTool using handles provided
- *
- * @return boolean
- * @global config
- * @global debug
- * @param  &rrd_process
- * @param  &rrd_pipes
- */
-
-
-function rrdtool_pipe_open(&$rrd_process, &$rrd_pipes)
-{
-    global $config;
-
-    $command = $config['rrdtool'].' -';
-
-    $descriptorspec = array(
-        0 => array(
-            'pipe',
-            'r',
-        ),
-        // stdin is a pipe that the child will read from
-        1 => array(
-            'pipe',
-            'w',
-        ),
-        // stdout is a pipe that the child will write to
-        2 => array(
-            'pipe',
-            'w',
-        ),
-        // stderr is a pipe that the child will write to
-    );
-
-    $cwd = $config['rrd_dir'];
-    $env = array();
-
-    $rrd_process = proc_open($command, $descriptorspec, $rrd_pipes, $cwd, $env);
-
-    stream_set_blocking($rrd_pipes[1], 0);
-    stream_set_blocking($rrd_pipes[2], 0);
-
-    if (is_resource($rrd_process)) {
-        // $pipes now looks like this:
-        // 0 => writeable handle connected to child stdin
-        // 1 => readable handle connected to child stdout
-        // Any error output will be appended to /tmp/error-output.txt
-        return true;
-    }
-
-}
-
-
-/**
- * Closes the pipe to RRDTool
- *
- * @return integer
- * @param  resource rrd_process
- * @param  array rrd_pipes
- */
-
-
-function rrdtool_pipe_close($rrd_process, &$rrd_pipes)
-{
-    d_echo(stream_get_contents($rrd_pipes[1]));
-    d_echo(stream_get_contents($rrd_pipes[2]));
-
-    fclose($rrd_pipes[0]);
-    fclose($rrd_pipes[1]);
-    fclose($rrd_pipes[2]);
-
-    // It is important that you close any pipes before calling
-    // proc_close in order to avoid a deadlock
-    $return_value = proc_close($rrd_process);
-
-    return $return_value;
-
-}
-
+use LibreNMS\Config;
 
 /**
  * Generates a graph file at $graph_file using $options
  * Opens its own rrdtool pipe.
  *
+ * @param string $graph_file
+ * @param string $options
  * @return integer
- * @param  string graph_file
- * @param  string options
  */
-
-
 function rrdtool_graph($graph_file, $options)
 {
-    global $config, $debug;
-
-    rrdtool_pipe_open($rrd_process, $rrd_pipes);
-
-    if (is_resource($rrd_process)) {
-        // $pipes now looks like this:
-        // 0 => writeable handle connected to child stdin
-        // 1 => readable handle connected to child stdout
-        // Any error output will be appended to /tmp/error-output.txt
-        if ($config['rrdcached']) {
-            if (isset($config['rrdcached_dir']) && $config['rrdcached_dir'] !== false) {
-                $options = str_replace($config['rrd_dir'].'/', './'.$config['rrdcached_dir'].'/', $options);
-                $options = str_replace($config['rrd_dir'], './'.$config['rrdcached_dir'].'/', $options);
-            }
-
-            fwrite($rrd_pipes[0], 'graph --daemon '.$config['rrdcached']." $graph_file $options");
-        }
-        else {
-            fwrite($rrd_pipes[0], "graph $graph_file $options");
-        }
-
-        fclose($rrd_pipes[0]);
-
-        while (strlen($line) < 1) {
-            $line  = fgets($rrd_pipes[1], 1024);
-            $data .= $line;
-        }
-
-        $return_value = rrdtool_pipe_close($rrd_process, $rrd_pipes);
-
-        if ($debug) {
-            echo '<p>';
-            if ($debug) {
-                echo "graph $graph_file $options";
-            }
-
-            echo '</p><p>';
-            echo "command returned $return_value ($data)\n";
-            echo '</p>';
-        }
-
-        return $data;
-    }
-    else {
-        return 0;
-    }
-
+    return Rrd::graph($graph_file, $options);
 }
 
 
 /**
- * Generates and pipes a command to rrdtool
+ * Checks if the rrd file exists on the server
+ * This will perform a remote check if using rrdcached and rrdtool >= 1.5
  *
- * @param  string command
- * @param  string filename
- * @param  string options
- * @global config
- * @global debug
- * @global rrd_pipes
+ * @param string $filename full path to the rrd file
+ * @return bool whether or not the passed rrd file exists
  */
-
-
-function rrdtool($command, $filename, $options)
+function rrdtool_check_rrd_exists($filename)
 {
-    global $config, $debug, $rrd_pipes, $console_color;
-
-    if ($config['rrdcached'] &&
-        (version_compare($config['rrdtool_version'], '1.5.5', '>=') ||
-        (version_compare($config['rrdtool_version'], '1.5', '>=') && $command != "tune") ||
-        ($command != "create" && $command != "tune"))
-        ) {
-        if (isset($config['rrdcached_dir']) && $config['rrdcached_dir'] !== false) {
-            $filename = str_replace($config['rrd_dir'].'/', './'.$config['rrdcached_dir'].'/', $filename);
-            $filename = str_replace($config['rrd_dir'], './'.$config['rrdcached_dir'].'/', $filename);
-        }
-
-        $cmd = "$command $filename $options --daemon ".$config['rrdcached'];
-    }
-    else {
-        $cmd = "$command $filename $options";
-    }
-
-    if ($config['norrd']) {
-        print $console_color->convert('[%rRRD Disabled%n]');
-    }
-    else {
-        fwrite($rrd_pipes[0], $cmd."\n");
-    }
-
-    if ($debug) {
-        echo stream_get_contents($rrd_pipes[1]);
-        echo stream_get_contents($rrd_pipes[2]);
-        print $console_color->convert('RRD[%g'.$cmd.'%n] ');
-    }
-    else {
-        return array(stream_get_contents($rrd_pipes[1]),stream_get_contents($rrd_pipes[2]));
-    }
-
+    return Rrd::checkRrdExists($filename);
 }
 
 
 /**
- * Generates an rrd database at $filename using $options
+ * Escapes strings for RRDtool
  *
- * @param string filename
- * @param string options
- */
-
-
-function rrdtool_create($filename, $options)
-{
-    global $config;
-    if( $config['rrdcached'] && $config['rrdtool_version'] >= 1.5 ) {
-        $chk = rrdtool('info', $filename, '');
-        if (!empty($chk[0])) {
-            return true;
-        }
-    }
-    return rrdtool('create', $filename,  str_replace(array("\r", "\n"), '', $options));
-}
-
-
-/**
- * Updates an rrd database at $filename using $options
- * Where $options is an array, each entry which is not a number is replaced with "U"
- *
- * @param string filename
- * @param array options
- */
-
-
-function rrdtool_update($filename, $options)
-{
-    $values = array();
-    // Do some sanitisation on the data if passed as an array.
-
-    if (is_array($options)) {
-        $values[] = 'N';
-        foreach ($options as $k => $v) {
-            if (!is_numeric($v)) {
-                $v = U;
-            }
-
-            $values[] = $v;
-        }
-
-        $options = implode(':', $values);
-        return rrdtool('update', $filename, $options);
-    }
-    else {
-        return 'Bad options passed to rrdtool_update';
-    }
-} // rrdtool_update
-
-
-function rrdtool_fetch($filename, $options)
-{
-    return rrdtool('fetch', $filename, $options);
-} // rrdtool_fetch
-
-
-function rrdtool_last($filename, $options)
-{
-    return rrdtool('last', $filename, $options);
-} // rrdtool_last
-
-
-function rrdtool_lastupdate($filename, $options)
-{
-    return rrdtool('lastupdate', $filename, $options);
-} // rrdtool_lastupdate
-
-
-/**
- * Escapes strings for RRDtool,
- *
+ * @param string $string the string to escape
+ * @param integer $length if passed, string will be padded and trimmed to exactly this length (after rrdtool unescapes it)
  * @return string
- *
- * @param string string to escape
- * @param integer if passed, string will be padded and trimmed to exactly this length (after rrdtool unescapes it)
  */
-function rrdtool_escape($string, $maxlength=null){
+function rrdtool_escape($string, $length = null)
+{
     $result = shorten_interface_type($string);
     $result = str_replace("'", '', $result);            # remove quotes
-    $result = str_replace('%', '%%', $result);          # double percent signs
-    if (is_numeric($maxlength)) {
-        $extra  = substr_count($string, ':', 0, $maxlength);
-        $result = substr(str_pad($result, $maxlength), 0, ($maxlength + $extra));
+
+    if (is_numeric($length)) {
+        # preserve original $length for str_pad()
+
+        # determine correct strlen() for substr_count()
+        $string_length=strlen($string);
+        $substr_count_length=$length;
+
+        if ($length > $string_length) {
+            $substr_count_length=$string_length; # If $length is greater than the haystack length, then substr_count() will produce a warning; fix warnings.
+        }
+
+        $extra = substr_count($string, ':', 0, $substr_count_length);
+        $result = substr(str_pad($result, $length), 0, ($length + $extra));
         if ($extra > 0) {
             $result = substr($result, 0, (-1 * $extra));
         }
     }
 
     $result = str_replace(':', '\:', $result);          # escape colons
+
     return $result.' ';
 } // rrdtool_escape
 
 
-/*
- * @return the name of the rrd file for $host's $extra component
- * @param host Host name
- * @param extra Components of RRD filename - will be separated with "-"
+/**
+ * Generates a filename based on the hostname (or IP) and some extra items
+ *
+ * @param string $host Host name
+ * @param array|string $extra Components of RRD filename - will be separated with "-", or a pre-formed rrdname
+ * @param string $extension File extension (default is .rrd)
+ * @return string the name of the rrd file for $host's $extra component
  */
-function rrd_name($host, $extra, $exten = ".rrd")
+function rrd_name($host, $extra, $extension = ".rrd")
 {
-    global $config;
-    $filename = safename(is_array($extra) ? implode("-", $extra) : $extra);
-    return implode("/", array($config['rrd_dir'], $host, $filename.$exten));
+    return Rrd::name($host, $extra, $extension);
 } // rrd_name
 
-function rrdtool_tune($type, $filename, $max) {
-    $fields = array();
-    if ($type === 'port') {
-        if ($max < 10000000) {
-            return false;
-        }
-        $max = $max / 8;
-        $fields = array(
-'INOCTETS','OUTOCTETS','INERRORS','OUTERRORS','INUCASTPKTS','OUTUCASTPKTS','INNUCASTPKTS','OUTNUCASTPKTS','INDISCARDS','OUTDISCARDS','INUNKNOWNPROTOS','INBROADCASTPKTS','OUTBROADCASTPKTS','INMULTICASTPKTS','OUTMULTICASTPKTS'
-        );
-    }
-    if (count($fields) > 0) {
-        $options = "--maximum " . implode(":$max --maximum ", $fields). ":$max";
-        rrdtool('tune', $filename, $options);
-    }
-} // rrdtool_tune
-
-
-/*
- * rrdtool backend implementation of data_update
+/**
+ * Generates a path based on the hostname (or IP)
+ *
+ * @param string $host Host name
+ * @return string the name of the rrd directory for $host
  */
-function rrdtool_data_update($device, $measurement, $tags, $fields)
+function get_rrd_dir($host)
 {
-    global $config;
+    $host = str_replace(':', '_', trim($host, '[]'));
+    return implode("/", [Config::get('rrd_dir'), $host]);
+} // rrd_dir
 
-    $rrd_name = $tags['rrd_name'] ? $tags['rrd_name'] : $measurement;
-    $step = $tags['rrd_step'] ? $tags['rrd_step'] : 300;
-    $oldname = $tags['rrd_oldname'];
-    if (isset($oldname) && !empty($oldname)) {
-        rrd_file_rename($device, $oldname, $rrd_name);
-    }
-
-    $rrd = rrd_name($device['hostname'], $rrd_name);
-    if (!is_file($rrd) && $tags['rrd_def']) {
-        $rrd_def = is_array($tags['rrd_def']) ? $tags['rrd_def'] : array($tags['rrd_def']);
-        // add the --step and the rra definitions to the command
-        $newdef = "--step $step ".implode(' ', $rrd_def).$config['rrd_rra'];
-        rrdtool_create($rrd, $newdef);
-    }
-
-    rrdtool_update($rrd, $fields);
-} // rrdtool_data_update
-
-
-/*
+/**
+ * rename an rrdfile, can only be done on the LibreNMS server hosting the rrd files
+ *
+ * @param array $device Device object
+ * @param string|array $oldname RRD name array as used with rrd_name()
+ * @param string|array $newname RRD name array as used with rrd_name()
  * @return bool indicating rename success or failure
- * @param device Device object
- * @param oldname RRD name array as used with rrd_name()
- * @param newname RRD name array as used with rrd_name()
  */
 function rrd_file_rename($device, $oldname, $newname)
 {
-    $oldrrd = rrd_name($device['hostname'], $oldname);
-    $newrrd = rrd_name($device['hostname'], $newname);
-    if (is_file($oldrrd) && !is_file($newrrd)) {
-        if (rename($oldrrd, $newrrd)) {
-            log_event("Renamed $oldrrd to $newrrd", $device, "poller");
-            return true;
-        }
-        else {
-            log_event("Failed to rename $oldrrd to $newrrd", $device, "poller");
-            return false;
-        }
-    }
-    else {
-        // we don't need to rename the file
-        return true;
-    }
+    return Rrd::renameFile($device, $oldname, $newname);
 } // rrd_file_rename

@@ -1,38 +1,47 @@
 <?php
 
-// Polls ntp-client statistics from script via SNMP
-$rrd_filename = $config['rrd_dir'].'/'.$device['hostname'].'/app-ntpclient-'.$app['app_id'].'.rrd';
-$options      = '-O qv';
-$oid          = 'nsExtendOutputFull.9.110.116.112.99.108.105.101.110.116';
+use LibreNMS\Exceptions\JsonAppParsingFailedException;
+use LibreNMS\Exceptions\JsonAppException;
+use LibreNMS\RRD\RrdDefinition;
 
-$ntpclient = snmp_get($device, $oid, $options);
+$name = 'ntp-client';
+$app_id = $app['app_id'];
 
-echo ' ntp-client';
+echo $name;
 
-list ($offset, $frequency, $jitter, $noise, $stability) = explode("\n", $ntpclient);
+try {
+    $ntp=json_app_get($device, $name);
+} catch (JsonAppParsingFailedException $e) {
+    // Legacy script, build compatible array
+    $legacy = $e->getOutput();
 
-if (!is_file($rrd_filename)) {
-    rrdtool_create(
-        $rrd_filename,
-        '--step 300 
-        DS:offset:GAUGE:600:-1000:1000 
-        DS:frequency:GAUGE:600:-1000:1000 
-        DS:jitter:GAUGE:600:-1000:1000 
-        DS:noise:GAUGE:600:-1000:1000 
-        DS:stability:GAUGE:600:-1000:1000 '.$config['rrd_rra']
+    $ntp=array(
+        data => array(),
     );
+    list ($ntp['data']['offset'], $ntp['data']['frequency'], $ntp['data']['sys_jitter'],
+          $ntp['data']['clk_jitter'], $ntp['data']['clk_wander']) = explode("\n", $legacy);
+} catch (JsonAppException $e) {
+    echo PHP_EOL . $name . ':' .$e->getCode().':'. $e->getMessage() . PHP_EOL;
+    update_application($app, $e->getCode().':'.$e->getMessage(), []); // Set empty metrics and error message
+    return;
 }
 
+$rrd_name = array('app', $name, $app_id);
+$rrd_def = RrdDefinition::make()
+    ->addDataset('offset', 'GAUGE', -1000, 1000)
+    ->addDataset('frequency', 'GAUGE', -1000, 1000)
+    ->addDataset('jitter', 'GAUGE', -1000, 1000)
+    ->addDataset('noise', 'GAUGE', -1000, 1000)
+    ->addDataset('stability', 'GAUGE', -1000, 1000);
+
 $fields = array(
-                'offset'    => $offset,
-                'frequency' => $frequency,
-                'jitter'    => $jitter,
-                'noise'     => $noise,
-                'stability' => $stability,
+    'offset' => $ntp['data']['offset'],
+    'frequency' => $ntp['data']['frequency'],
+    'jitter' => $ntp['data']['sys_jitter'],
+    'noise' => $ntp['data']['clk_jitter'],
+    'stability' => $ntp['data']['clk_wander'],
 );
 
-rrdtool_update($rrd_filename, $fields);
-
-$tags = array('name' => 'ntpclient', 'app_id' => $app['app_id']);
-influx_update($device,'app',$tags,$fields);
-
+$tags = compact('name', 'app_id', 'rrd_name', 'rrd_def');
+data_update($device, 'app', $tags, $fields);
+update_application($app, 'OK', $fields);

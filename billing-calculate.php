@@ -2,22 +2,17 @@
 <?php
 
 /**
- * Observium
+ * LibreNMS
  *
- *   This file is part of Observium.
+ *   This file is part of LibreNMS.
  *
- * @package    observium
+ * @package    LibreNMS
  * @subpackage billing
- * @author     Adam Armstrong <adama@memetic.org>
  * @copyright  (C) 2006 - 2012 Adam Armstrong
  */
 
-chdir(dirname($argv[0]));
-
-require 'includes/defaults.inc.php';
-require 'config.php';
-require 'includes/definitions.inc.php';
-require 'includes/functions.php';
+$init_modules = array();
+require __DIR__ . '/includes/init.php';
 
 $options = getopt('r');
 
@@ -44,8 +39,11 @@ foreach (dbFetchRows('SELECT * FROM `bills` ORDER BY `bill_id`') as $bill) {
 
         $date_updated = str_replace('-', '', str_replace(':', '', str_replace(' ', '', $check['updated'])));
 
+        // Send the current dir_95th to the getRates function so it knows to aggregate or return the max in/out value and highest direction
+        $dir_95th = $bill['dir_95th'];
+
         if ($period > 0 && $dateto > $date_updated) {
-            $rate_data    = getRates($bill['bill_id'], $datefrom, $dateto);
+            $rate_data    = getRates($bill['bill_id'], $datefrom, $dateto, $dir_95th);
             $rate_95th    = $rate_data['rate_95th'];
             $dir_95th     = $rate_data['dir_95th'];
             $total_data   = $rate_data['total_data'];
@@ -60,8 +58,7 @@ foreach (dbFetchRows('SELECT * FROM `bills` ORDER BY `bill_id`') as $bill) {
                 $overuse      = ($used - $allowed);
                 $overuse      = (($overuse <= 0) ? '0' : $overuse);
                 $percent      = round((($rate_data['rate_95th'] / $bill['bill_cdr']) * 100), 2);
-            }
-            else if ($bill['bill_type'] == 'quota') {
+            } elseif ($bill['bill_type'] == 'quota') {
                 $type         = 'Quota';
                 $allowed      = $bill['bill_quota'];
                 $used         = $rate_data['total_data'];
@@ -113,8 +110,7 @@ foreach (dbFetchRows('SELECT * FROM `bills` ORDER BY `bill_id`') as $bill) {
 
                 dbUpdate($update, 'bill_history', '`bill_hist_id` = ?', array($check['bill_hist_id']));
                 echo ' Updated history! ';
-            }
-            else {
+            } else {
                 $update = array(
                     'rate_95th'        => $rate_data['rate_95th'],
                     'rate_95th_in'     => $rate_data['rate_95th_in'],
@@ -133,8 +129,6 @@ foreach (dbFetchRows('SELECT * FROM `bills` ORDER BY `bill_id`') as $bill) {
                     'bill_used'        => $used,
                     'bill_overuse'     => $overuse,
                     'bill_percent'     => $percent,
-                    'bill_datefrom'    => $datefrom,
-                    'bill_dateto'      => $dateto,
                     'bill_id'          => $bill['bill_id'],
                 );
                 dbInsert($update, 'bill_history');

@@ -25,27 +25,30 @@
  * @author     Tony Murray <murraytony@gmail.com>
  */
 
+use LibreNMS\RRD\RrdDefinition;
+
 echo ' rrdcached';
 
 $data = "";
+$name = 'rrdcached';
+$app_id = $app['app_id'];
 
-if ($agent_data['app']['rrdcached']) {
-    $data = $agent_data['app']['rrdcached'];
+if ($agent_data['app'][$name]) {
+    $data = $agent_data['app'][$name];
 } else {
     d_echo("\nNo Agent Data. Attempting to connect directly to the rrdcached server " . $device['hostname'] . ":42217\n");
 
     $sock = fsockopen($device['hostname'], 42217, $errno, $errstr, 5);
 
-    if (!$sock && $device['hostname'] == 'localhost') {
-        if (file_exists('/var/run/rrdcached.sock')) {
-            $sock = fsockopen('unix:///var/run/rrdcached.sock');
-        } elseif (file_exists('/run/rrdcached.sock')) {
-            $sock = fsockopen('unix:///run/rrdcached.sock');
-        } elseif (file_exists('/tmp/rrdcached.sock')) {
-            $sock = fsockopen('unix:///tmp/rrdcached.sock');
+    if (!$sock) {
+        $socket = \LibreNMS\Config::get('rrdcached');
+        if (substr($socket, 0, 6) == 'unix:/') {
+            $socket_file = substr($socket, 5);
+            if (file_exists($socket_file)) {
+                $sock = fsockopen("unix://" . $socket_file);
+            }
         }
     }
-
     if ($sock) {
         fwrite($sock, "STATS\n");
         $max = -1;
@@ -53,7 +56,8 @@ if ($agent_data['app']['rrdcached']) {
         while ($max == -1 || $count < $max) {
             $data .= fgets($sock, 128);
             if ($max == -1) {
-                $max = explode(' ', $data)[0] + 1;
+                $tmp_max = explode(' ', $data);
+                $max     = $tmp_max[0]+1;
             }
             $count++;
         }
@@ -63,40 +67,29 @@ if ($agent_data['app']['rrdcached']) {
     }
 }
 
-$rrd_filename = $config['rrd_dir'].'/'.$device['hostname'].'/app-rrdcached-'.$app['app_id'].'.rrd';
+$rrd_name = array('app', $name, $app_id);
+$rrd_def = RrdDefinition::make()
+    ->addDataset('queue_length', 'GAUGE', 0)
+    ->addDataset('updates_received', 'COUNTER', 0)
+    ->addDataset('flushes_received', 'COUNTER', 0)
+    ->addDataset('updates_written', 'COUNTER', 0)
+    ->addDataset('data_sets_written', 'COUNTER', 0)
+    ->addDataset('tree_nodes_number', 'GAUGE', 0)
+    ->addDataset('tree_depth', 'GAUGE', 0)
+    ->addDataset('journal_bytes', 'COUNTER', 0)
+    ->addDataset('journal_rotate', 'COUNTER', 0);
 
-
-if (!is_file($rrd_filename)) {
-    rrdtool_create(
-        $rrd_filename,
-        '--step 300
-        DS:queue_length:GAUGE:600:0:U
-        DS:updates_received:COUNTER:600:0:U
-        DS:flushes_received:COUNTER:600:0:U
-        DS:updates_written:COUNTER:600:0:U
-        DS:data_sets_written:COUNTER:600:0:U
-        DS:tree_nodes_number:GAUGE:600:0:U
-        DS:tree_depth:GAUGE:600:0:U
-        DS:journal_bytes:COUNTER:600:0:U
-        DS:journal_rotate:COUNTER:600:0:U
-        '.$config['rrd_rra']
-    );
-}
 $fields = array();
 foreach (explode("\n", $data) as $line) {
     $split = explode(': ', $line);
     if (count($split) == 2) {
-        $name = strtolower(preg_replace('/[A-Z]/', '_$0', lcfirst($split[0])));
-        $fields[$name] = $split[1];
+        $ds = strtolower(preg_replace('/[A-Z]/', '_$0', lcfirst($split[0])));
+        $fields[$ds] = $split[1];
     }
 }
 
-rrdtool_update($rrd_filename, $fields);
+$tags = compact('name', 'app_id', 'rrd_name', 'rrd_def');
+data_update($device, 'app', $tags, $fields);
+update_application($app, $data, $fields);
 
-$tags = array('name' => 'rrdcached', 'app_id' => $app['app_id']);
-influx_update($device,'app',$tags,$fields);
-
-unset($data);
-unset($rrd_filename);
-unset($fields);
-unset($tags);
+unset($data, $rrd_name, $rrd_def, $fields, $tags);

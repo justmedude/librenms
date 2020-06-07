@@ -4,49 +4,49 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>. */
 
 /**
  * Notification Poller
- * @author Daniel Preussker
  * @copyright 2015 Daniel Preussker, QuxLabs UG
- * @license GPL
- * @package LibreNMS
+ * @copyright 2017 Tony Murray
+ * @author    Daniel Preussker
+ * @author    Tony Murray <murraytony@gmail.com>
+ * @license   GPL
+ * @package   LibreNMS
+ * @link      http://librenms.org
  * @subpackage Notifications
  */
-
-require_once $config['install_dir'].'/includes/defaults.inc.php';
-require_once $config['install_dir'].'/config.php';
-require_once $config['install_dir'].'/includes/definitions.inc.php';
-require_once $config['install_dir'].'/includes/functions.php';
 
 /**
  * Pull notifications from remotes
  * @return array Notifications
  */
-function get_notifications() {
-    global $config;
+function get_notifications()
+{
     $obj = array();
-    foreach ($config['notifications'] as $name=>$url) {
+    foreach (\LibreNMS\Config::get('notifications') as $name => $url) {
         echo '[ '.date('r').' ] '.$url.' ';
-        $feed = json_decode(json_encode(simplexml_load_string(file_get_contents($url))),true);
+        $feed = json_decode(json_encode(simplexml_load_string(file_get_contents($url))), true);
         if (isset($feed['channel'])) {
             $feed = parse_rss($feed);
         } else {
             $feed = parse_atom($feed);
         }
-        array_walk($feed,function(&$items,$key,$url) { $items['source'] = $url; },$url);
-        $obj = array_merge($obj,$feed);
+        array_walk($feed, function (&$items, $key, $url) {
+            $items['source'] = $url;
+        }, $url);
+        $obj = array_merge($obj, $feed);
         echo '('.sizeof($obj).')'.PHP_EOL;
     }
-    $obj = array_sort($obj, 'datetime');
+    $obj = array_sort_by_column($obj, 'datetime');
     return $obj;
 }
 
@@ -54,11 +54,12 @@ function get_notifications() {
  * Post notifications to users
  * @return null
  */
-function post_notifications() {
+function post_notifications()
+{
     $notifs = get_notifications();
     echo '[ '.date('r').' ] Updating DB ';
     foreach ($notifs as $notif) {
-        if (dbFetchCell('select 1 from notifications where checksum = ?',array($notif['checksum'])) != 1 && dbInsert('notifications',$notif) > 0) {
+        if (dbFetchCell('select 1 from notifications where checksum = ?', array($notif['checksum'])) != 1 && dbInsert($notif, 'notifications') > 0) {
             echo '.';
         }
     }
@@ -71,16 +72,17 @@ function post_notifications() {
  * @param array $feed RSS Object
  * @return array Parsed Object
  */
-function parse_rss($feed) {
+function parse_rss($feed)
+{
     $obj = array();
-    if( !array_key_exists('0',$feed['channel']['item']) ) {
+    if (!array_key_exists('0', $feed['channel']['item'])) {
         $feed['channel']['item'] = array( $feed['channel']['item'] );
     }
     foreach ($feed['channel']['item'] as $item) {
         $obj[] = array(
             'title'=>$item['title'],
             'body'=>$item['description'],
-            'checksum'=>hash('sha512',$item['title'].$item['description']),
+            'checksum'=>hash('sha512', $item['title'].$item['description']),
             'datetime'=>strftime('%F', strtotime($item['pubDate']))
             );
     }
@@ -92,20 +94,62 @@ function parse_rss($feed) {
  * @param array $feed Atom Object
  * @return array Parsed Object
  */
-function parse_atom($feed) {
+function parse_atom($feed)
+{
     $obj = array();
-    if( !array_key_exists('0',$feed['entry']) ) {
+    if (!array_key_exists('0', $feed['entry'])) {
         $feed['entry'] = array( $feed['entry'] );
     }
     foreach ($feed['entry'] as $item) {
         $obj[] = array(
             'title'=>$item['title'],
             'body'=>$item['content'],
-            'checksum'=>hash('sha512',$item['title'].$item['content']),
+            'checksum'=>hash('sha512', $item['title'].$item['content']),
             'datetime'=>strftime('%F', strtotime($item['updated']))
             );
     }
     return $obj;
 }
 
-post_notifications();
+/**
+ * Create a new custom notification. Duplicate title+message notifications will not be created.
+ *
+ * @param string $title
+ * @param string $message
+ * @param int $severity 0=ok, 1=warning, 2=critical
+ * @param string $source A string describing what created this notification
+ * @param string $date
+ * @return bool
+ */
+function new_notification($title, $message, $severity = 0, $source = 'adhoc', $date = null)
+{
+    $notif = array(
+        'title' => $title,
+        'body' => $message,
+        'severity' => $severity,
+        'source' => $source,
+        'checksum' => hash('sha512', $title . $message),
+        'datetime' => strftime('%F', is_null($date) ? time() : strtotime($date))
+    );
+
+    if (dbFetchCell('SELECT 1 FROM `notifications` WHERE `checksum` = ?', array($notif['checksum'])) != 1) {
+        return dbInsert($notif, 'notifications') > 0;
+    }
+
+    return false;
+}
+
+/**
+ * Removes all notifications with the given title.
+ * This should be used with care.
+ *
+ * @param string $title
+ */
+function remove_notification($title)
+{
+    $ids = dbFetchColumn('SELECT `notifications_id` FROM `notifications` WHERE `title`=?', array($title));
+    foreach ($ids as $id) {
+        dbDelete('notifications', '`notifications_id`=?', array($id));
+        dbDelete('notifications_attribs', '`notifications_id`=?', array($id));
+    }
+}

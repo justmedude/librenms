@@ -12,31 +12,30 @@
  * the source code distribution for details.
  */
 
-require_once '../includes/defaults.inc.php';
-set_debug($_REQUEST['debug']);
-require_once '../config.php';
-require_once '../includes/definitions.inc.php';
-require_once 'includes/functions.inc.php';
-require_once '../includes/functions.php';
-require_once 'includes/authenticate.inc.php';
+$init_modules = array('web', 'auth');
+require realpath(__DIR__ . '/..') . '/includes/init.php';
 
-$current = $_POST['current'];
+if (!Auth::check()) {
+    die('Unauthorized');
+}
+
+set_debug($_REQUEST['debug']);
+
+$current = $_REQUEST['current'];
 settype($current, 'integer');
-$rowCount = $_POST['rowCount'];
+$rowCount = $_REQUEST['rowCount'];
 settype($rowCount, 'integer');
-if (isset($_POST['sort']) && is_array($_POST['sort'])) {
-    foreach ($_POST['sort'] as $k => $v) {
+if (isset($_REQUEST['sort']) && is_array($_POST['sort'])) {
+    foreach ($_REQUEST['sort'] as $k => $v) {
         $sort .= " $k $v";
     }
 }
 
-$searchPhrase = mres($_POST['searchPhrase']);
-$id           = mres($_POST['id']);
+$searchPhrase = $_REQUEST['searchPhrase'];
+$id           = basename($_REQUEST['id']);
 $response     = array();
 
-if (isset($id)) {
-    if (file_exists("includes/table/$id.inc.php")) {
-        header('Content-type: application/json');
-        include_once "includes/table/$id.inc.php";
-    }
+if ($id && file_exists("includes/html/table/$id.inc.php")) {
+    header('Content-type: application/json');
+    include_once "includes/html/table/$id.inc.php";
 }

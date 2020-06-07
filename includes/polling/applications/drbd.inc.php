@@ -1,31 +1,32 @@
 <?php
 
-$rrd_filename = $config['rrd_dir'].'/'.$device['hostname'].'/app-drbd-'.$app['app_instance'].'.rrd';
+use LibreNMS\RRD\RrdDefinition;
 
-foreach (explode('|', $agent_data['app']['drbd'][$app['app_instance']]) as $part) {
+$name = 'drbd';
+$app_instance = $app['app_instance'];
+$app_id = $app['app_id'];
+$drbd_data = $agent_data['app'][$name][$app_instance];
+foreach (explode('|', $drbd_data) as $part) {
     list($stat, $val) = explode('=', $part);
     if (!empty($stat)) {
         $drbd[$stat] = $val;
     }
 }
 
-if (!is_file($rrd_filename)) {
-    rrdtool_create(
-        $rrd_filename,
-        '--step 300 
-        DS:ns:DERIVE:600:0:125000000000 
-        DS:nr:DERIVE:600:0:125000000000 
-        DS:dw:DERIVE:600:0:125000000000 
-        DS:dr:DERIVE:600:0:125000000000 
-        DS:al:DERIVE:600:0:125000000000 
-        DS:bm:DERIVE:600:0:125000000000 
-        DS:lo:GAUGE:600:0:125000000000 
-        DS:pe:GAUGE:600:0:125000000000 
-        DS:ua:GAUGE:600:0:125000000000 
-        DS:ap:GAUGE:600:0:125000000000 
-        DS:oos:GAUGE:600:0:125000000000 '.$config['rrd_rra']
-    );
-}
+$rrd_name = array('app', $name, $app_instance);
+$rrd_def = RrdDefinition::make()
+    ->addDataset('ns', 'DERIVE', 0, 125000000000)
+    ->addDataset('nr', 'DERIVE', 0, 125000000000)
+    ->addDataset('dw', 'DERIVE', 0, 125000000000)
+    ->addDataset('dr', 'DERIVE', 0, 125000000000)
+    ->addDataset('al', 'DERIVE', 0, 125000000000)
+    ->addDataset('bm', 'DERIVE', 0, 125000000000)
+    ->addDataset('lo', 'GAUGE', 0, 125000000000)
+    ->addDataset('pe', 'GAUGE', 0, 125000000000)
+    ->addDataset('ua', 'GAUGE', 0, 125000000000)
+    ->addDataset('ap', 'GAUGE', 0, 125000000000)
+    ->addDataset('oos', 'GAUGE', 0, 125000000000);
+
 
 $fields = array(
     'ns'  => $drbd['ns'],
@@ -41,9 +42,8 @@ $fields = array(
     'oos' => $drbd['oos'],
 );
 
-rrdtool_update($rrd_filename, $fields);
+$tags = array('name', 'app_id', 'rrd_name', 'rrd_def');
+data_update($device, 'app', $tags, $fields);
+update_application($app, $drbd_data, $fields);
 
-$tags = array('name' => 'drbd', 'app_id' => $app['app_id']);
-influx_update($device,'app',$tags,$fields);
-
-unset($drbd);
+unset($drbd, $drbd_data);

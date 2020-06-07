@@ -12,12 +12,17 @@
  */
 
 if ($device['os_group'] == "cisco") {
-
     /*
      * Cisco PRI
      * This module graphs the used and total DS0 channels on a Cisco Voice Gateway
      */
     include "cisco-voice/cisco-iospri.inc.php";
+
+    /*
+     * Cisco IP
+     * This module graphs the used IP channels on a Cisco Voice Gateway
+     */
+    include "cisco-voice/cisco-ip.inc.php";
 
     /*
      * Cisco DSP
@@ -35,6 +40,10 @@ if ($device['os_group'] == "cisco") {
      * Cisco XCode
      * This module graphs the used and total Transcoder resources on a Cisco Voice Gateway
      */
-    include "cisco-voice/cisco-xcode.inc.php";
-
+    include "cisco-voice/cisco-iosxcode.inc.php";
 }
+
+unset(
+    $output,
+    $key
+);

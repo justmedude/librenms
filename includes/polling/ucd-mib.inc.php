@@ -1,8 +1,6 @@
 <?php
 
-$load_rrd = $host_rrd.'/ucd_load.rrd';
-$cpu_rrd  = $host_rrd.'/ucd_cpu.rrd';
-$mem_rrd  = $host_rrd.'/ucd_mem.rrd';
+use LibreNMS\RRD\RrdDefinition;
 
 // Poll systemStats from UNIX-like hosts running UCD/Net-SNMPd
 // UCD-SNMP-MIB::ssIndex.0 = INTEGER: 1
@@ -30,23 +28,18 @@ $mem_rrd  = $host_rrd.'/ucd_mem.rrd';
 // UCD-SNMP-MIB::ssCpuRawSoftIRQ.0 = Counter32: 2605010
 // UCD-SNMP-MIB::ssRawSwapIn.0 = Counter32: 602002
 // UCD-SNMP-MIB::ssRawSwapOut.0 = Counter32: 937422
+// UCD-SNMP-MIB::ssCpuRawWait.0
+// UCD-SNMP-MIB::ssCpuRawSteal.0
+
 $ss = snmpwalk_cache_oid($device, 'systemStats', array(), 'UCD-SNMP-MIB');
 $ss = $ss[0];
-// Insert Nazi joke here.
-// Create CPU RRD if it doesn't already exist
-$cpu_rrd_create = ' --step 300 
-    DS:user:COUNTER:600:0:U 
-    DS:system:COUNTER:600:0:U 
-    DS:nice:COUNTER:600:0:U 
-    DS:idle:COUNTER:600:0:U '.$config['rrd_rra'];
 
-// This is how we currently collect. We should collect one RRD per stat, for ease of handling differen formats,
-// and because it is per-host and no big performance hit. See new format below
-// FIXME REMOVE
 if (is_numeric($ss['ssCpuRawUser']) && is_numeric($ss['ssCpuRawNice']) && is_numeric($ss['ssCpuRawSystem']) && is_numeric($ss['ssCpuRawIdle'])) {
-    if (!is_file($cpu_rrd)) {
-        rrdtool_create($cpu_rrd, $cpu_rrd_create);
-    }
+    $rrd_def = RrdDefinition::make()
+        ->addDataset('user', 'COUNTER', 0)
+        ->addDataset('system', 'COUNTER', 0)
+        ->addDataset('nice', 'COUNTER', 0)
+        ->addDataset('idle', 'COUNTER', 0);
 
     $fields = array(
         'user'    => $ss['ssCpuRawUser'],
@@ -55,10 +48,8 @@ if (is_numeric($ss['ssCpuRawUser']) && is_numeric($ss['ssCpuRawNice']) && is_num
         'idle'    => $ss['ssCpuRawIdle'],
     );
 
-    rrdtool_update($cpu_rrd, $fields);
-
-    $tags = array();
-    influx_update($device,'ucd_cpu',$tags,$fields);
+    $tags = compact('rrd_def');
+    data_update($device, 'ucd_cpu', $tags, $fields);
 
     $graphs['ucd_cpu'] = true;
 }
@@ -79,24 +70,21 @@ $collect_oids = array(
     'ssRawContexts',
     'ssRawSwapIn',
     'ssRawSwapOut',
+    'ssCpuRawWait',
+    'ssCpuRawSteal',
 );
 
 foreach ($collect_oids as $oid) {
     if (is_numeric($ss[$oid])) {
-        $value    = $ss[$oid];
-        $filename = $host_rrd.'/ucd_'.$oid.'.rrd';
-        if (!is_file($filename)) {
-            rrdtool_create($filename, ' --step 300 DS:value:COUNTER:600:0:U '.$config['rrd_rra']);
-        }
+        $rrd_name = 'ucd_'.$oid;
+        $rrd_def = RrdDefinition::make()->addDataset('value', 'COUNTER', 0);
 
         $fields = array(
-            'value' => $value,
+            'value' => $ss[$oid],
         );
 
-        rrdtool_update($filename, $fields);
-
-        $tags = array('oid' => $oid);
-        influx_update($device,'ucd_cpu',$tags,$fields);
+        $tags = compact('oid', 'rrd_name', 'rrd_def');
+        data_update($device, 'ucd_cpu', $tags, $fields);
 
         $graphs['ucd_cpu'] = true;
     }
@@ -119,6 +107,14 @@ if (is_numeric($ss['ssRawInterrupts'])) {
     $graphs['ucd_interrupts'] = true;
 }
 
+if (is_numeric($ss['ssCpuRawWait'])) {
+    $graphs['ucd_io_wait'] = true;
+}
+
+if (is_numeric($ss['ssCpuRawSteal'])) {
+    $graphs['ucd_cpu_steal'] = true;
+}
+
 // #
 // Poll mem for load memory utilisation stats on UNIX-like hosts running UCD/Net-SNMPd
 // UCD-SNMP-MIB::memIndex.0 = INTEGER: 0
@@ -133,17 +129,8 @@ if (is_numeric($ss['ssRawInterrupts'])) {
 // UCD-SNMP-MIB::memCached.0 = INTEGER: 2595556 kB
 // UCD-SNMP-MIB::memSwapError.0 = INTEGER: noError(0)
 // UCD-SNMP-MIB::memSwapErrorMsg.0 = STRING:
-$mem_rrd_create = ' --step 300 
-    DS:totalswap:GAUGE:600:0:10000000000 
-    DS:availswap:GAUGE:600:0:10000000000 
-    DS:totalreal:GAUGE:600:0:10000000000 
-    DS:availreal:GAUGE:600:0:10000000000 
-    DS:totalfree:GAUGE:600:0:10000000000 
-    DS:shared:GAUGE:600:0:10000000000 
-    DS:buffered:GAUGE:600:0:10000000000 
-    DS:cached:GAUGE:600:0:10000000000 '.$config['rrd_rra'];
 
-$snmpdata = snmp_get_multi($device, 'memTotalSwap.0 memAvailSwap.0 memTotalReal.0 memAvailReal.0 memTotalFree.0 memShared.0 memBuffer.0 memCached.0', '-OQUs', 'UCD-SNMP-MIB');
+$snmpdata = snmp_get_multi($device, ['memTotalSwap.0', 'memAvailSwap.0', 'memTotalReal.0', 'memAvailReal.0', 'memTotalFree.0', 'memShared.0', 'memBuffer.0', 'memCached.0'], '-OQUs', 'UCD-SNMP-MIB');
 if (is_array($snmpdata[0])) {
     list($memTotalSwap, $memAvailSwap, $memTotalReal, $memAvailReal, $memTotalFree, $memShared, $memBuffer, $memCached) = $snmpdata[0];
     foreach (array_keys($snmpdata[0]) as $key) {
@@ -153,12 +140,16 @@ if (is_array($snmpdata[0])) {
 
 $snmpdata = $snmpdata[0];
 
-// Check to see that the OIDs are actually populated before we make the rrd
 if (is_numeric($memTotalReal) && is_numeric($memAvailReal) && is_numeric($memTotalFree)) {
-    if (!is_file($mem_rrd)) {
-        // Create the rrd file if it doesn't exist
-        rrdtool_create($mem_rrd, $mem_rrd_create);
-    }
+    $rrd_def = RrdDefinition::make()
+        ->addDataset('totalswap', 'GAUGE', 0, 10000000000)
+        ->addDataset('availswap', 'GAUGE', 0, 10000000000)
+        ->addDataset('totalreal', 'GAUGE', 0, 10000000000)
+        ->addDataset('availreal', 'GAUGE', 0, 10000000000)
+        ->addDataset('totalfree', 'GAUGE', 0, 10000000000)
+        ->addDataset('shared', 'GAUGE', 0, 10000000000)
+        ->addDataset('buffered', 'GAUGE', 0, 10000000000)
+        ->addDataset('cached', 'GAUGE', 0, 10000000000);
 
     $fields = array(
         'totalswap'    => $memTotalSwap,
@@ -171,10 +162,8 @@ if (is_numeric($memTotalReal) && is_numeric($memAvailReal) && is_numeric($memTot
         'cached'       => $memCached,
     );
 
-    rrdtool_update($mem_rrd, $fields);
-
-    $tags = array();
-    influx_update($device,'ucd_mem',$tags,$fields);
+    $tags = compact('rrd_def');
+    data_update($device, 'ucd_mem', $tags, $fields);
 
     $graphs['ucd_memory'] = true;
 }
@@ -184,13 +173,14 @@ if (is_numeric($memTotalReal) && is_numeric($memAvailReal) && is_numeric($memTot
 // UCD-SNMP-MIB::laLoadInt.1 = INTEGER: 206
 // UCD-SNMP-MIB::laLoadInt.2 = INTEGER: 429
 // UCD-SNMP-MIB::laLoadInt.3 = INTEGER: 479
-$load_raw = snmp_get_multi($device, 'laLoadInt.1 laLoadInt.2 laLoadInt.3', '-OQUs', 'UCD-SNMP-MIB');
+$load_raw = snmp_get_multi($device, ['laLoadInt.1', 'laLoadInt.2', 'laLoadInt.3'], '-OQUs', 'UCD-SNMP-MIB');
 
 // Check to see that the 5-min OID is actually populated before we make the rrd
 if (is_numeric($load_raw[2]['laLoadInt'])) {
-    if (!is_file($load_rrd)) {
-        rrdtool_create($load_rrd, ' --step 300 DS:1min:GAUGE:600:0:5000 DS:5min:GAUGE:600:0:5000 DS:15min:GAUGE:600:0:5000 '.$config['rrd_rra']);
-    }
+    $rrd_def = RrdDefinition::make()
+        ->addDataset('1min', 'GAUGE', 0)
+        ->addDataset('5min', 'GAUGE', 0)
+        ->addDataset('15min', 'GAUGE', 0);
 
     $fields = array(
         '1min'   => $load_raw[1]['laLoadInt'],
@@ -198,14 +188,12 @@ if (is_numeric($load_raw[2]['laLoadInt'])) {
         '15min'  => $load_raw[3]['laLoadInt'],
     );
 
-    rrdtool_update($load_rrd, $fields);
-
-    $tags = array();
-    influx_update($device,'ucd_load',$tags,$fields);
+    $tags = compact('rrd_def');
+    data_update($device, 'ucd_load', $tags, $fields);
 
     $graphs['ucd_load'] = 'TRUE';
 }
 
-unset($ss, $load_rrd, $load_raw, $snmpdata);
+unset($ss, $load_raw, $snmpdata);
 unset($memTotalSwap, $memAvailSwap, $memTotalReal, $memAvailReal, $memTotalFree, $memShared, $memBuffer, $memCached);
-unset($key, $mem_rrd, $mem_rrd_create, $collect_oids, $value, $filename, $cpu_rrd, $cpu_rrd_create, $oid);
+unset($key, $collect_oids, $rrd_name, $rrd_def, $oid);

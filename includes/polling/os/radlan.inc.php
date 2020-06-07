@@ -1,18 +1,12 @@
 <?php
 
-if ($poll_device['sysDescr'] == 'Neyland 24T') {
-    // $hardware = snmp_get($device, "productIdentificationVendor.0", "-Ovq", "Dell-Vendor-MIB");
-    $hardware = 'Dell '.snmp_get($device, 'productIdentificationDisplayName.0', '-Ovq', 'Dell-Vendor-MIB');
-    $version  = snmp_get($device, 'productIdentificationVersion.0', '-Ovq', 'Dell-Vendor-MIB');
-    $icon     = 'dell';
-}
-else {
-    $version  = snmp_get($device, 'rndBrgVersion.0', '-Ovq', 'RADLAN-MIB');
-    $hardware = str_replace('ATI', 'Allied Telesis', $poll_device['sysDescr']);
-    $icon     = 'allied';
-}
+// sysDescr.0 = STRING: "ATI AT-8000S"
+// sysDescr.0 = STRING: 48-port 10/100/1000 Ethernet Switch
+// sysDescr.0 = STRING: 24-port 10/100/1000 Ethernet Switch with PoE
 
-$features = snmp_get($device, 'rndBaseBootVersion.00', '-Ovq', 'RADLAN-MIB');
+$hardware = snmp_getnext($device, 'entPhysicalDescr.64', '-OsvQU', 'ENTITY-MIB');
+$version  = snmp_get($device, 'rndBrgVersion.0', '-OsvQU', 'RADLAN-MIB');
+$serial   = snmp_getnext($device, 'entPhysicalSerialNum.64', '-OsvQU', 'ENTITY-MIB');
 
 $version  = str_replace('"', '', $version);
 $features = str_replace('"', '', $features);

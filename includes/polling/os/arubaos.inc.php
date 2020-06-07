@@ -2,7 +2,7 @@
 
 // ArubaOS (MODEL: Aruba3600), Version 6.1.2.2 (29541)
 $badchars                    = array( '(', ')', ',',);
-list(,,$hardware,,$version,) = str_replace($badchars, '', explode(' ', $poll_device['sysDescr']));
+list(,,$hardware,,$version,) = str_replace($badchars, '', explode(' ', $device['sysDescr']));
 
 // Build SNMP Cache Array
 // stuff about the controller
@@ -20,7 +20,6 @@ echo "\n";
 
 if ($aruba_info[0]['wlsxSwitchRole'] == 'master') {
     $features = 'Master Controller';
-}
-else {
+} else {
     $features = 'Local Controller for '.$aruba_info[0]['wlsxSwitchMasterIp'];
 }

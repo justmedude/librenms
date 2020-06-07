@@ -12,7 +12,6 @@
  */
 
 if ($device['os_group'] == 'cisco') {
-
     // Define some error messages
     $error_vpn = array();
     $error_vpn[0] = "Other";
@@ -58,11 +57,9 @@ if ($device['os_group'] == 'cisco') {
     $error_overlay[6] = "destroy";
 
     $module = 'Cisco-OTV';
-    echo $module.': ';
 
-    require_once 'includes/component.php';
-    $component = new component();
-    $components = $component->getComponents($device['device_id'],array('type'=>$module));
+    $component = new LibreNMS\Component();
+    $components = $component->getComponents($device['device_id'], array('type'=>$module));
 
     // We only care about our device id.
     $components = $components[$device['device_id']];
@@ -80,23 +77,21 @@ if ($device['os_group'] == 'cisco') {
      * False == no object found - this is not an error, there is no QOS configured
      * null  == timeout or something else that caused an error, there may be QOS configured but we couldn't get it.
      */
-    if ( is_null($tblOverlayEntry) || is_null($tblAdjacencyDatabaseEntry) || is_null($tblAdjacentDevName) ) {
+    if (is_null($tblOverlayEntry) || is_null($tblAdjacencyDatabaseEntry) || is_null($tblAdjacentDevName)) {
         // We have to error here or we will end up deleting all our components.
         echo "Error\n";
-    }
-    else {
+    } else {
         // No Error, lets process things.
 
         // Add each overlay to the array.
-        foreach ($tblOverlayEntry['1.3.6.1.4.1.9.9.810.1.2.1.1.2'] as $index => $name) {
+        foreach ((array)$tblOverlayEntry['1.3.6.1.4.1.9.9.810.1.2.1.1.2'] as $index => $name) {
             $result = array();
             $message = false;
             $result['index'] = $index;
             $result['label'] = $name;
             if ($tblOverlayEntry['1.3.6.1.4.1.9.9.810.1.2.1.1.15'][$index] == 1) {
                 $result['transport'] = 'Multicast';
-            }
-            else {
+            } else {
                 $result['transport'] = 'Unicast';
             }
             $result['otvtype'] = 'overlay';
@@ -117,11 +112,10 @@ if ($device['os_group'] == 'cisco') {
             // If we have set a message, we have an error, activate alert.
             if ($message !== false) {
                 $result['error'] = $message;
-                $result['status'] = 0;
-            }
-            else {
+                $result['status'] = 2;
+            } else {
                 $result['error'] = "";
-                $result['status'] = 1;
+                $result['status'] = 0;
             }
 
             // Let's log some debugging
@@ -138,49 +132,50 @@ if ($device['os_group'] == 'cisco') {
         }
 
         // Add each adjacency to the array.
-        foreach ($tblAdjacentDevName as $key => $value) {
-            preg_match('/^1.3.6.1.4.1.9.9.810.1.3.1.1.4.(\d+).1.4.(\d+.\d+.\d+.\d+)$/', $key, $matches);
-            $result = array();
-            $result['index'] = $matches[1];
-            $result['endpoint'] = $matches[2];
-            $tblEndpoints[$value] = true;
-            $result['otvtype'] = 'adjacency';
-            $result['UID'] = $result['otvtype']."-".$result['index']."-".str_replace(' ', '', $tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.3.'.$result['index'].'.1.4.'.$result['endpoint']]);
-            $result['uptime'] = $tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.6.'.$result['index'].'.1.4.'.$result['endpoint']];
-            $message = false;
-            if ($tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.5.'.$result['index'].'.1.4.'.$result['endpoint']] != 1) {
-                $message .= "Adjacency is Down\n";
-            }
-
-            // If we have set a message, we have an error, activate alert.
-            if ($message !== false) {
-                $result['error'] = $message;
-                $result['status'] = 0;
-            }
-            else {
-                $result['error'] = "";
-                $result['status'] = 1;
-            }
-
-            // Set a default name, if for some unknown reason we cant find the parent VPN.
-            $result['label'] = "Unknown (".$result['index'].") - ".$value;
-            // We need to search the existing array to build the name
-            foreach ($tblOTV as $item) {
-                if (($item['otvtype'] == 'overlay') && ($item['index'] == $result['index'])) {
-                    $result['label'] = $item['label']." - ".$value;
+        if ($tblAdjacentDevName) {
+            foreach ((array)$tblAdjacentDevName as $key => $value) {
+                preg_match('/^1.3.6.1.4.1.9.9.810.1.3.1.1.4.(\d+).1.4.(\d+.\d+.\d+.\d+)$/', $key, $matches);
+                $result = array();
+                $result['index'] = $matches[1];
+                $result['endpoint'] = $matches[2];
+                $tblEndpoints[$value] = true;
+                $result['otvtype'] = 'adjacency';
+                $result['UID'] = $result['otvtype']."-".$result['index']."-".str_replace(' ', '', $tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.3.'.$result['index'].'.1.4.'.$result['endpoint']]);
+                $result['uptime'] = $tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.6.'.$result['index'].'.1.4.'.$result['endpoint']];
+                $message = false;
+                if ($tblAdjacencyDatabaseEntry['1.3.6.1.4.1.9.9.810.1.3.1.1.5.'.$result['index'].'.1.4.'.$result['endpoint']] != 1) {
+                    $message .= "Adjacency is Down\n";
                 }
+
+                // If we have set a message, we have an error, activate alert.
+                if ($message !== false) {
+                    $result['error'] = $message;
+                    $result['status'] = 1;
+                } else {
+                    $result['error'] = "";
+                    $result['status'] = 0;
+                }
+
+                // Set a default name, if for some unknown reason we cant find the parent VPN.
+                $result['label'] = "Unknown (".$result['index'].") - ".$value;
+                // We need to search the existing array to build the name
+                foreach ($tblOTV as $item) {
+                    if (($item['otvtype'] == 'overlay') && ($item['index'] == $result['index'])) {
+                        $result['label'] = $item['label']." - ".$value;
+                    }
+                }
+
+                // Let's log some debugging
+                d_echo("\n\nAdjacency: ".$result['label']."\n");
+                d_echo("    Endpoint: ".$result['endpoint']."\n");
+                d_echo("    Index: ".$result['index']."\n");
+                d_echo("    UID: ".$result['UID']."\n");
+                d_echo("    Status: ".$result['status']."\n");
+                d_echo("    Message: ".$result['error']."\n");
+
+                // Add the result to the parent array.
+                $tblOTV[] = $result;
             }
-
-            // Let's log some debugging
-            d_echo("\n\nAdjacency: ".$result['label']."\n");
-            d_echo("    Endpoint: ".$result['endpoint']."\n");
-            d_echo("    Index: ".$result['index']."\n");
-            d_echo("    UID: ".$result['UID']."\n");
-            d_echo("    Status: ".$result['status']."\n");
-            d_echo("    Message: ".$result['error']."\n");
-
-            // Add the result to the parent array.
-            $tblOTV[] = $result;
         }
 
         // We retain a list of all endpoints to tie the RRD to.
@@ -209,7 +204,7 @@ if ($device['os_group'] == 'cisco') {
             $component_key = false;
 
             // Loop over our components to determine if the component exists, or we need to add it.
-            foreach ($components as $compid => $child) {
+            foreach ((array)$components as $compid => $child) {
                 if ($child['UID'] === $array['UID']) {
                     $component_key = $compid;
                 }
@@ -217,23 +212,21 @@ if ($device['os_group'] == 'cisco') {
 
             if (!$component_key) {
                 // The component doesn't exist, we need to ADD it - ADD.
-                $new_component = $component->createComponent($device['device_id'],$module);
+                $new_component = $component->createComponent($device['device_id'], $module);
                 $component_key = key($new_component);
                 $components[$component_key] = array_merge($new_component[$component_key], $array);
                 echo "+";
-            }
-            else {
+            } else {
                 // The component does exist, merge the details in - UPDATE.
                 $components[$component_key] = array_merge($components[$component_key], $array);
                 echo ".";
             }
-
         }
 
         /*
          * Loop over the Component data to see if we need to DELETE any components.
          */
-        foreach ($components as $key => $array) {
+        foreach ((array)$components as $key => $array) {
             // Guilty until proven innocent
             $found = false;
 
@@ -252,9 +245,7 @@ if ($device['os_group'] == 'cisco') {
         }
 
         // Write the Components back to the DB.
-        $component->setComponentPrefs($device['device_id'],$components);
+        $component->setComponentPrefs($device['device_id'], $components);
         echo "\n";
-
     } // End if not error
-
 }
